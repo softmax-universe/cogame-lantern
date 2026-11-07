@@ -26,7 +26,7 @@
       "run": [
         "/bin/lantern"
       ],
-      "source_url": "https://github.com/Metta-AI/cogame-lantern/tree/main"
+      "source_url": "https://github.com/softmax-universe/cogame-lantern/tree/main"
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -592,7 +592,7 @@
           "cpu": "1"
         }
       },
-      "source_url": "https://github.com/Metta-AI/cogame-lantern/tree/main"
+      "source_url": "https://github.com/softmax-universe/cogame-lantern/tree/main"
     },
     {
       "id": "prompt",
@@ -615,7 +615,7 @@
           "cpu": "1"
         }
       },
-      "source_url": "https://github.com/Metta-AI/cogame-lantern/tree/main"
+      "source_url": "https://github.com/softmax-universe/cogame-lantern/tree/main"
     }
   ],
   "variants": [
