@@ -29,11 +29,26 @@ suite "strict parsing":
     check order.target == Point(x: 200, y: 200)
     check order.crawl
 
-  test "prose and markdown fences are rejected":
+  test "single markdown JSON presentation fence is accepted without inventing actions":
+    let fencedJson = hider("```json\n{\"intent\":\"wait\"}\n```")
+    check fencedJson.intent == inWait
+    check fencedJson.target == Here
+    let fencedPlain = hider("```\n{\"intent\":\"hide\",\"target\":[200,200],\"crawl\":true}\n```")
+    check fencedPlain.intent == inHide
+    check fencedPlain.target == Point(x: 200, y: 200)
+    check fencedPlain.crawl
+
+  test "prose, non-json fences, and multiple fences are rejected":
     expect LanternError:
       discard hider("""Sure! Here is my order: {"intent":"scout","target":[300,300]}""")
     expect LanternError:
-      discard hider("```json\n{\"intent\":\"wait\"}\n```")
+      discard hider("Sure!\n```json\n{\"intent\":\"wait\"}\n```")
+    expect LanternError:
+      discard hider("```json\n{\"intent\":\"wait\"}\n```\nThanks!")
+    expect LanternError:
+      discard hider("```python\n{\"intent\":\"wait\"}\n```")
+    expect LanternError:
+      discard hider("```json\n{\"intent\":\"wait\"}\n```\n```json\n{\"intent\":\"wait\"}\n```")
     expect LanternError:
       discard hider("""I considered } and then decided. {"intent":"flee","target":[10,10]}""")
 

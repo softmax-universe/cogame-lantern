@@ -80,9 +80,23 @@ suite "the platform contract":
     check not game["runnable"].hasKey("env")
     check not game["config_schema"]["properties"].hasKey("model")
     check not game["config_schema"]["properties"].hasKey("maxOutputTokens")
+    check manifest["player"].len == 3
+    check manifest["player"][0]["id"].getStr() == "baseline"
     check manifest["player"][0]["env"]["PLAYER_SCRIPTED"].getStr() == "warden"
+    check not manifest["player"][0]["env"].hasKey("COWORLD_LLM_ENABLED")
+    check not manifest["player"][0]["env"].hasKey("COWORLD_LLM_ENDPOINT")
+    check manifest["player"][1]["id"].getStr() == "moth"
     check manifest["player"][1]["env"]["PLAYER_SCRIPTED"].getStr() == "moth"
-    check manifest["player"].len == 2
+    check not manifest["player"][1]["env"].hasKey("COWORLD_LLM_ENABLED")
+    check not manifest["player"][1]["env"].hasKey("COWORLD_LLM_ENDPOINT")
+    let modelPlayer = manifest["player"][2]
+    check modelPlayer["id"].getStr() == "prompt"
+    check modelPlayer["run"][0].getStr() == "/bin/lantern-player"
+    check modelPlayer["env"]["COWORLD_LLM_ENABLED"].getStr() == "true"
+    check modelPlayer["env"]["COWORLD_LLM_MODEL"].getStr() == "anthropic/claude-haiku-4.5"
+    check modelPlayer["env"]["PLAYER_PROMPT"].getStr().len > 0
+    check not modelPlayer["env"].hasKey("PLAYER_SCRIPTED")
+    check not modelPlayer["env"].hasKey("COWORLD_LLM_ENDPOINT")
 
   test "episode_timeout_minutes is 20, and TOP-LEVEL where the schema puts it":
     ## CoworldGameManifest has additionalProperties: false, so this key under
@@ -184,6 +198,8 @@ suite "the policy set":
       if policy["env"].hasKey("PLAYER_PROMPT"):
         inc prompts
         check policy["env"]["PLAYER_PROMPT"].getStr().len > 400
+        check policy["env"]["COWORLD_LLM_ENABLED"].getStr() == "true"
+        check policy["env"]["COWORLD_LLM_MODEL"].getStr() == "anthropic/claude-haiku-4.5"
       if policy["env"].hasKey("PLAYER_SCRIPTED"):
         inc scripts
         check policy["env"]["PLAYER_SCRIPTED"].getStr() in ["warden", "moth"]

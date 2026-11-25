@@ -138,10 +138,12 @@ runes and `fallback.detail` ≤ 200 runes. **Truncation is on rune boundaries,
 never bytes** — a byte-truncated
 multi-byte character renders in a browser and then fails a strict JSON parser.
 
-Parsing is strict: the reply must be a single JSON object starting with `{`,
-carrying canonical field types and a role-legal `intent`. Any invalid reply
-triggers the one retry; if the retry also fails, the episode ends as an explicit
-policy failure with no substitute move and no published scores.
+Parsing is strict: the reply must be a single JSON object starting with `{`
+(optionally wrapped in a single Markdown presentation fence, `` ``` `` or
+`` ```json ``, with no surrounding prose or extra fences), carrying canonical
+field types and a role-legal `intent`. Any invalid reply triggers the one
+retry; if the retry also fails, the episode ends as an explicit policy failure
+with no substitute move and no published scores.
 
 ## Decisions and timing
 

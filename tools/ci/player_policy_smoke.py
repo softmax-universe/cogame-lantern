@@ -41,12 +41,16 @@ def main(game_bin: str, player_bin: str) -> None:
                     "note": "prompt-stub",
                 }
             )
+            call_index = len(calls)
+            text = json.dumps(order)
+            if call_index == 1:
+                text = f"```json\n{text}\n```"
             response = {
-                "model": "fixture/served",
+                "model": request.get("model", "fixture/served"),
                 "content": [
                     {
                         "type": "text",
-                        "text": json.dumps(order),
+                        "text": text,
                     }
                 ],
                 "stop_reason": "end_turn",
@@ -153,6 +157,76 @@ def main(game_bin: str, player_bin: str) -> None:
                 if process.poll() is None:
                     process.wait(timeout=5)
             for log in logs:
+                log.close()
+
+    # Verify failure-without-scores when a model seat has no COWORLD_LLM_ENDPOINT.
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        fail_port = sock.getsockname()[1]
+    fail_processes: list[subprocess.Popen] = []
+    fail_logs = []
+    with tempfile.TemporaryDirectory(prefix="lantern-policy-no-endpoint-") as directory:
+        out = Path(directory)
+        (out / "config.json").write_text(json.dumps(config))
+        game_env = base_env | {
+            "COGAME_HOST": "127.0.0.1",
+            "COGAME_PORT": str(fail_port),
+            "COGAME_CONFIG_URI": f"file://{out}/config.json",
+            "COGAME_RESULTS_URI": f"file://{out}/results.json",
+            "COGAME_SAVE_REPLAY_URI": f"file://{out}/replay.json",
+            "COGAME_PLAYER_FAILURE_URI": f"file://{out}/player_failure.json",
+        }
+        try:
+            game_log = (out / "game.log").open("w")
+            fail_logs.append(game_log)
+            fail_processes.append(
+                subprocess.Popen(
+                    [game_bin],
+                    cwd=repo,
+                    env=game_env,
+                    stdout=game_log,
+                    stderr=subprocess.STDOUT,
+                )
+            )
+            for slot in range(6):
+                player_env = base_env | {
+                    "COWORLD_PLAYER_WS_URL": (
+                        f"ws://127.0.0.1:{fail_port}/player?slot={slot}"
+                        f"&token=policy-smoke-{slot}"
+                    ),
+                }
+                if slot == 1:
+                    player_env["COWORLD_LLM_ENABLED"] = "true"
+                    player_env["COWORLD_LLM_MODEL"] = "anthropic/claude-haiku-4.5"
+                    player_env["PLAYER_PROMPT"] = "Play both roles."
+                else:
+                    player_env["PLAYER_SCRIPTED"] = "warden" if slot % 2 == 0 else "moth"
+                log = (out / f"player-{slot}.log").open("w")
+                fail_logs.append(log)
+                fail_processes.append(
+                    subprocess.Popen(
+                        [player_bin],
+                        cwd=repo,
+                        env=player_env,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                    )
+                )
+            codes = [process.wait(timeout=180) for process in fail_processes]
+            assert codes == [0] * 7, codes
+            assert not (out / "results.json").exists(), "results.json must not be written on policy failure"
+            assert not (out / "replay.json").exists(), "replay.json must not be written on policy failure"
+            failure = json.loads((out / "player_failure.json").read_text())
+            assert failure["slot"] == 1 and failure["cause"] == "no_credentials", failure
+            print(f"player policy no-endpoint failure OK: {failure}")
+        finally:
+            for process in fail_processes:
+                if process.poll() is None:
+                    process.terminate()
+            for process in fail_processes:
+                if process.poll() is None:
+                    process.wait(timeout=5)
+            for log in fail_logs:
                 log.close()
 
 
