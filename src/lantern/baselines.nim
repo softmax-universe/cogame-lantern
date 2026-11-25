@@ -16,10 +16,9 @@ import std/strutils
 import types, arena, crates, rules, sim, state, labels
 
 proc parseScriptKind*(text: string): ScriptKind =
-  ## PLAYER_SCRIPTED values, following bullwhip's parser: "1"/"true"/"yes"/
-  ## "warden" play the warden, "moth" the moth, anything else nothing.
+  ## Explicit scripted baseline names only: "warden" or "moth".
   case text.strip().toLowerAscii()
-  of "1", "true", "yes", "warden": skWarden
+  of "warden": skWarden
   of "moth": skMoth
   else: skNone
 

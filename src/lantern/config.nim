@@ -41,9 +41,6 @@ proc millisOf(node: JsonNode): int =
   case node.kind
   of JInt: node.getInt() * 1000
   of JFloat: int(round(node.getFloat() * 1000.0))
-  of JString:
-    try: int(round(parseFloat(node.getStr()) * 1000.0))
-    except ValueError: 0
   else: 0
 
 proc intField(node: JsonNode, key: string, current: int): int =
@@ -104,9 +101,8 @@ proc update*(config: var GameConfig, configJson: string) =
     config.turnBudgetMs = millisOf(node["turnBudgetSeconds"])
   if node.hasKey("wallClockBudgetSeconds"):
     config.wallClockBudgetMs = millisOf(node["wallClockBudgetSeconds"])
-  for key in ["playerConnectTimeoutSeconds", "player_connect_timeout_seconds"]:
-    if node.hasKey(key):
-      config.playerConnectTimeoutMs = millisOf(node[key])
+  if node.hasKey("playerConnectTimeoutSeconds"):
+    config.playerConnectTimeoutMs = millisOf(node["playerConnectTimeoutSeconds"])
   if node.hasKey("episodeTimeoutSeconds"):
     config.episodeTimeoutMs = millisOf(node["episodeTimeoutSeconds"])
   if node.hasKey("shutdownGraceSeconds"):

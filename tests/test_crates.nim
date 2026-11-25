@@ -126,10 +126,10 @@ suite "crates":
     sim.driveOne(1, 100, 0, 6)
     check sim.cogs[1].px > CrateX - CrateHalf - PlayerHalf
 
-  test "crate ids round-trip and reject nonsense":
+  test "crate ids round-trip and reject non-canonical forms":
     check parseCrateId("C4", 10) == 4
-    check parseCrateId("c4", 10) == 4
-    check parseCrateId("4", 10) == 4
+    check parseCrateId("c4", 10) == -1
+    check parseCrateId("4", 10) == -1
     check parseCrateId("C42", 10) == -1
     check parseCrateId("", 10) == -1
     check parseCrateId("banana", 10) == -1

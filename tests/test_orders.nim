@@ -1,4 +1,4 @@
-## Tolerant parsing, repair, and the RUNE-boundary caps.
+## Strict order parsing, legality validation, and RUNE-boundary caps.
 ##
 ## A byte-truncated multi-byte character renders fine in a browser and then
 ## fails a strict JSON parser: that is the bug these caps exist to prevent, so
@@ -22,79 +22,76 @@ proc hider(text: string): Order =
 proc seeker(text: string): Order =
   parseOrderText(text, roSeeker, Here, crateList)
 
-suite "tolerant parsing":
+suite "strict parsing":
   test "plain JSON":
     let order = hider("""{"intent":"hide","target":[200,200],"crawl":true}""")
     check order.intent == inHide
     check order.target == Point(x: 200, y: 200)
     check order.crawl
 
-  test "prose before and after the object":
-    let order = hider("""Sure! Here is my order:
-      {"intent":"scout","target":[300,300]}
-      Let me know if you want a different alcove.""")
-    check order.intent == inScout
+  test "prose and markdown fences are rejected":
+    expect LanternError:
+      discard hider("""Sure! Here is my order: {"intent":"scout","target":[300,300]}""")
+    expect LanternError:
+      discard hider("```json\n{\"intent\":\"wait\"}\n```")
+    expect LanternError:
+      discard hider("""I considered } and then decided. {"intent":"flee","target":[10,10]}""")
 
-  test "a markdown fence":
-    let order = hider("```json\n{\"intent\":\"wait\"}\n```")
-    check order.intent == inWait
-
-  test "a prefix containing a stray closing brace":
-    let order = hider("""I considered } and then decided.
-      {"intent":"flee","target":[10,10],"note":"beam"}""")
-    check order.intent == inFlee
-    check order.note == "beam"
-
-  test "no object at all raises, which is what costs the retry":
+  test "missing or unknown intent raises":
     expect LanternError:
       discard hider("I would rather not say.")
     expect LanternError:
-      discard hider("""{"target":[10,10]}""")     ## no intent
+      discard hider("""{"target":[10,10]}""")
     expect LanternError:
-      discard hider("""{"intent":"teleport"}""")  ## unknown intent
+      discard hider("""{"intent":"teleport"}""")
 
-suite "repair":
-  test "a seeker intent from a hider degrades to hide":
-    check hider("""{"intent":"pry","crate":"C3"}""").intent == inHide
-  test "a hider intent from a seeker degrades to sweep":
-    check seeker("""{"intent":"lock","crate":"C1"}""").intent == inSweep
+suite "legality and strict field types":
+  test "wrong-role intents are rejected rather than rewritten":
+    expect LanternError:
+      discard hider("""{"intent":"pry","crate":"C3"}""")
+    expect LanternError:
+      discard seeker("""{"intent":"lock","crate":"C1"}""")
 
-  test "target accepts numeric strings and objects, and is clamped":
-    check hider("""{"intent":"hide","target":["612","118"]}""").target ==
-      Point(x: 612, y: 118)
-    check hider("""{"intent":"hide","target":{"x":50,"y":60}}""").target ==
-      Point(x: 50, y: 60)
+  test "target requires [int, int] and clamps to map bounds":
     check hider("""{"intent":"hide","target":[-9000,9000]}""").target ==
       Point(x: TargetMinX, y: TargetMaxY)
-    check hider("""{"intent":"hide","target":[612.0,118.7]}""").target ==
-      Point(x: 612, y: 118)
-
-  test "a missing target becomes the cog's own position":
     check hider("""{"intent":"hide"}""").target == Here
+    check hider("""{"intent":"hide","target":null}""").target == Here
+    expect LanternError:
+      discard hider("""{"intent":"hide","target":["612","118"]}""")
+    expect LanternError:
+      discard hider("""{"intent":"hide","target":{"x":50,"y":60}}""")
+    expect LanternError:
+      discard hider("""{"intent":"hide","target":[612.0,118.7]}""")
 
-  test "crate accepts 4, \"c4\" and \"C4\", and rejects \"C42\"":
-    check hider("""{"intent":"push","crate":4,"target":[10,10]}""").crate == 4
-    check hider("""{"intent":"push","crate":"c4","target":[10,10]}""").crate == 4
+  test "crate requires canonical C0..C9 in a legal state":
     check hider("""{"intent":"push","crate":"C4","target":[10,10]}""").crate == 4
-    ## C42 is not a crate: the intent keeps its meaning by falling back to the
-    ## nearest crate that IS legal for it, rather than the order failing.
-    let repaired = hider("""{"intent":"push","crate":"C42","target":[10,10]}""")
-    check repaired.intent == inPush
-    check repaired.crate >= 0
-    check crateList[repaired.crate].state == csLoose
+    check seeker("""{"intent":"pry","crate":"C3"}""").crate == 3
+    expect LanternError:
+      discard hider("""{"intent":"push","crate":4,"target":[10,10]}""")
+    expect LanternError:
+      discard hider("""{"intent":"push","crate":"c4","target":[10,10]}""")
+    expect LanternError:
+      discard hider("""{"intent":"push","crate":"C42","target":[10,10]}""")
+    expect LanternError:
+      discard seeker("""{"intent":"pry","crate":"C0"}""")
+    expect LanternError:
+      discard hider("""{"intent":"push","crate":"C3","target":[10,10]}""")
+    expect LanternError:
+      discard hider("""{"intent":"hide","crate":"C0"}""")
 
-  test "a pry order snaps to a LOCKED crate, a push to a loose one":
-    check crateList[seeker("""{"intent":"pry","crate":"C0"}""").crate].state ==
-      csLocked
-    check crateList[hider("""{"intent":"push","crate":"C3"}""").crate].state ==
-      csLoose
-
-  test "an unknown aim becomes target, and a seeker never crawls":
-    check hider("""{"intent":"hide","aim":"spin"}""").aim == amTarget
-    check seeker("""{"intent":"sweep","crawl":true}""").crawl == false
-    check hider("""{"intent":"hide","crawl":"true"}""").crawl
-    check hider("""{"intent":"hide","crawl":1}""").crawl
-    check hider("""{"intent":"hide","crawl":"maybe"}""").crawl == false
+  test "aim and crawl require canonical types and role legality":
+    check seeker("""{"intent":"sweep","aim":"sweep","crawl":false}""").aim == amSweep
+    expect LanternError:
+      discard hider("""{"intent":"hide","aim":"spin"}""")
+    expect LanternError:
+      discard seeker("""{"intent":"sweep","crawl":true}""")
+    expect LanternError:
+      discard hider("""{"intent":"hide","crawl":"true"}""")
+    expect LanternError:
+      discard hider("""{"intent":"hide","crawl":1}""")
+    expect LanternError:
+      discard hider("""{"intent":"hide","crawl":"maybe"}""")
 
 suite "rune-boundary truncation":
   test "a 400-character note is cut to exactly 140 runes":
@@ -127,10 +124,7 @@ suite "rune-boundary truncation":
     check hider("""{"intent":"hide","note":"a\nb\tc"}""").note == "a b c"
 
 suite "the two-failure ladder":
-  test "two unusable replies leave the seat on the warden order":
-    ## `decideAll` is exercised end to end in tests/test_engine.nim; here we
-    ## assert the contract this file owns: an unusable reply RAISES, which is
-    ## the only thing that costs an attempt.
+  test "unusable replies raise":
     var failures = 0
     for reply in ["", "no.", "{}", """{"intent":"fly"}""", "{\"intent\":"]:
       try:

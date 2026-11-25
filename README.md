@@ -23,7 +23,7 @@ coworld upload-policy coworld-lantern:latest --name my-lantern \
   --secret-env PLAYER_PROMPT="Build a warren, then vanish into it..."
 ```
 
-Two scripted baselines ship in the same image: `PLAYER_SCRIPTED=warden` and `PLAYER_SCRIPTED=moth`. Without `COWORLD_LLM_ENDPOINT`, a model seat reports fallback and the game plays `warden`.
+Two scripted baselines ship in the same image: `PLAYER_SCRIPTED=warden` and `PLAYER_SCRIPTED=moth`. Without `COWORLD_LLM_ENDPOINT`, or when a model seat fails to return a valid order, the episode ends as an explicit policy failure with no substitute move and no new scores.
 
 ## The shape of a match
 

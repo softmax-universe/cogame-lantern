@@ -1,5 +1,6 @@
-## Game-owned decision timing, order validation, fallback, and replay notes.
+## Game-owned decision timing, order validation, and policy-failure reporting.
 ## Player policies receive private views and return ordinary orders.
+## Invalid or missing model outputs fail the episode rather than fabricating a move.
 
 import std/[json, monotimes, options, times]
 import bitworld/decision_trajectory
@@ -20,6 +21,9 @@ type
     observation*: JsonNode
     attempts*: seq[DecisionAttempt]
     selectedAttemptId*: Option[string]
+    failed*: bool
+    failureCause*: FallbackCause
+    failureDetail*: string
 
   DecisionExchange* = proc(requests: seq[JsonNode], timeoutMs: int):
     seq[string] {.gcsafe.}
@@ -31,6 +35,7 @@ type
     order*: Order
     evidence*: DecisionAttempt
     cause*: FallbackCause
+    detail*: string
 
 proc playerProposal*(raw, requestId: string, seat, half: int,
     sim: Sim): PlayerProposal =
@@ -46,7 +51,8 @@ proc playerProposal*(raw, requestId: string, seat, half: int,
     if reply["type"].getStr() == "attempt_interrupted":
       result.kind = pkInterrupted
       result.cause = fcTimeout
-      result.evidence.rejectionReason = some("episode interrupted before engine order installation")
+      result.detail = "episode interrupted before engine order installation"
+      result.evidence.rejectionReason = some(result.detail)
       return
     if reply["type"].getStr() == "attempt_timeout":
       raise newException(LanternError, "player action timed out after model request")
@@ -54,22 +60,28 @@ proc playerProposal*(raw, requestId: string, seat, half: int,
         reply["protocol"].getStr() != "lantern.player.v3" or
         reply["decision_id"].getStr() != requestId:
       raise newException(LanternError, "player action envelope mismatch")
+    let cog = sim.cogs[seat]
+    let at = Point(x: cog.px, y: cog.py)
     if reply{"source"}.getStr() == "fallback":
       result.kind = pkFallback
       result.cause = case reply{"cause"}.getStr()
         of "no_endpoint": fcNoCredentials
         of "timeout": fcTimeout
         else: fcTransportError
-      result.evidence.rejectionReason = some("player policy reported fallback")
-      result.order = scriptedOrder(sim, seat, half, skWarden)
+      result.detail =
+        if result.evidence.rejectionReason.isSome:
+          result.evidence.rejectionReason.get()
+        else:
+          "player policy reported fallback (" & reply{"cause"}.getStr("unknown") & ")"
+      if result.evidence.rejectionReason.isNone:
+        result.evidence.rejectionReason = some(result.detail)
       return
     if reply{"source"}.getStr() notin ["llm", "external"]:
       raise newException(LanternError, "player action source must be llm or external")
-    let cog = sim.cogs[seat]
-    let at = Point(x: cog.px, y: cog.py)
-    result.order = if reply.hasKey("response"):
-      parseOrderText(reply["response"].getStr(), roleOfSlot(seat, half), at, sim.crates)
-      else: parseOrder(reply["order"], roleOfSlot(seat, half), at, sim.crates)
+    if not reply.hasKey("response") or reply["response"].kind != JString:
+      raise newException(LanternError, "player action requires a string response")
+    result.order = parseOrderText(reply["response"].getStr(),
+      roleOfSlot(seat, half), at, sim.crates)
     if result.evidence.origin == aoModel:
       if result.evidence.response.kind != JString:
         raise newException(LanternError, "model attempt response must be text")
@@ -95,26 +107,29 @@ proc playerProposal*(raw, requestId: string, seat, half: int,
   except CatchableError as error:
     result.kind = pkRejected
     result.cause = fcParseError
+    result.detail = error.msg
     result.evidence.rejectionReason = some(error.msg)
 
 proc decideAll*(selection: PromptSelection, sim: Sim, half: int, openSeats: seq[int],
                 scripted: seq[ScriptKind], forceScripted: bool,
                 exchange: DecisionExchange): seq[Decision] =
   ## All model seats see one pre-action state. Invalid or missing replies get
-  ## one retry, then the game-owned warden order.
+  ## one retry, then fail the turn without fabricating a substitute move.
   result = newSeq[Decision](openSeats.len)
   var pending: seq[int]
   for index, seat in openSeats:
     result[index].observation = seatView(sim, seat)
     result[index].observation["prompt_selection"] = selection.selectionMetadata()
     let kind = scripted[seat]
-    if kind != skNone or forceScripted:
+    if kind != skNone:
       result[index].order = scriptedOrder(sim, seat, half, kind)
       result[index].source = osScripted
-      if kind == skNone:
-        result[index].source = osFallback
-        result[index].notes.add(FallbackNote(
-          attempt: 0, cause: fcBudgetGuard, detail: "budget guard engaged"))
+    elif forceScripted:
+      result[index].failed = true
+      result[index].failureCause = fcBudgetGuard
+      result[index].failureDetail = "budget guard engaged"
+      result[index].notes.add(FallbackNote(
+        attempt: 0, cause: fcBudgetGuard, detail: "budget guard engaged"))
     else:
       pending.add(index)
 
@@ -166,22 +181,29 @@ proc decideAll*(selection: PromptSelection, sim: Sim, half: int, openSeats: seq[
         result[index].latencyMs = latency
         result[index].selectedAttemptId = some(proposal.evidence.attemptId)
       of pkFallback:
-        result[index].order = proposal.order
-        result[index].source = osFallback
+        result[index].failed = true
+        result[index].failureCause = proposal.cause
+        result[index].failureDetail = proposal.detail
         result[index].notes.add(FallbackNote(attempt: attempt,
-          cause: proposal.cause, detail: "player policy reported fallback"))
+          cause: proposal.cause, detail: proposal.detail))
       of pkInterrupted:
         interrupted = true
         stillPending.add(index)
       of pkRejected:
         result[index].notes.add(FallbackNote(attempt: attempt,
-          cause: proposal.cause, detail: "invalid private player reply"))
+          cause: proposal.cause, detail: proposal.detail))
         stillPending.add(index)
     pending = stillPending
     if interrupted: break
 
   for index in pending:
     let seat = openSeats[index]
-    echo "lantern: seat ", seat, " falling back to the scripted order"
-    result[index].order = scriptedOrder(sim, seat, half, skWarden)
-    result[index].source = osFallback
+    result[index].failed = true
+    if result[index].notes.len > 0:
+      result[index].failureCause = result[index].notes[^1].cause
+      result[index].failureDetail = result[index].notes[^1].detail
+    else:
+      result[index].failureCause = fcTimeout
+      result[index].failureDetail = "player action timed out"
+    echo "lantern: seat ", seat, " failed policy decision (",
+      $result[index].failureCause, ")"

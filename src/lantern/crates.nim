@@ -14,15 +14,10 @@ proc crateId*(index: int): string {.inline.} =
   "C" & $index
 
 proc parseCrateId*(text: string, count: int): int =
-  ## "C4" / "c4" / "4" -> 4; anything else -> -1. Case-insensitive, and the
-  ## caller has already capped the string at MaxCrateIdRunes.
-  if text.len == 0 or text.len > 3:
+  ## Canonical crate ids only: "C0".."C9"; anything else -> -1.
+  if text.len < 2 or text.len > 3 or text[0] != 'C':
     return -1
-  var digits = text
-  if digits[0] == 'C' or digits[0] == 'c':
-    digits = digits[1 .. ^1]
-  if digits.len == 0:
-    return -1
+  let digits = text[1 .. ^1]
   var value = 0
   for character in digits:
     if character < '0' or character > '9':

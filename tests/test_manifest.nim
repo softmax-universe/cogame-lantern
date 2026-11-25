@@ -80,7 +80,8 @@ suite "the platform contract":
     check not game["runnable"].hasKey("env")
     check not game["config_schema"]["properties"].hasKey("model")
     check not game["config_schema"]["properties"].hasKey("maxOutputTokens")
-    check manifest["player"][1]["env"].hasKey("PLAYER_PROMPT")
+    check manifest["player"][0]["env"]["PLAYER_SCRIPTED"].getStr() == "warden"
+    check manifest["player"][1]["env"]["PLAYER_SCRIPTED"].getStr() == "moth"
     check manifest["player"].len == 2
 
   test "episode_timeout_minutes is 20, and TOP-LEVEL where the schema puts it":

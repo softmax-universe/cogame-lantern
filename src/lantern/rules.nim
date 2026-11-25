@@ -59,8 +59,7 @@ proc bandCode*(band: Band): int {.inline.} =
   ord(band)
 
 # ---------------------------------------------------------------------------
-# Intent legality. `intent` is the only field whose repair depends on the
-# seat's role, so the tables live next to the rules rather than in the parser.
+# Intent legality.
 # ---------------------------------------------------------------------------
 
 const
@@ -71,11 +70,6 @@ proc legalFor*(intent: Intent, role: Role): bool {.inline.} =
   case role
   of roHider: intent in HiderIntents
   of roSeeker: intent in SeekerIntents
-
-proc defaultIntent*(role: Role): Intent {.inline.} =
-  case role
-  of roHider: inHide
-  of roSeeker: inSweep
 
 proc needsCrate*(intent: Intent): bool {.inline.} =
   intent in {inPush, inLock, inPry}
