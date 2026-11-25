@@ -124,9 +124,31 @@ proc parseOrder*(payload: JsonNode, role: Role, at: Point,
       raise newException(LanternError, "say must be a string")
     result.say = clip(oneLine(sayNode.getStr()), MaxSayRunes)
 
+proc unwrapSingleJsonFence*(text: string): string =
+  ## Accepts either a bare JSON object or a single Markdown presentation fence
+  ## (``` or ```json) wrapping a single JSON object, with no prose outside it.
+  let trimmed = text.strip()
+  if not trimmed.startsWith("```"):
+    return trimmed
+  let firstNewline = trimmed.find('\n')
+  if firstNewline < 0:
+    return ""
+  let info = trimmed[3 ..< firstNewline].strip().toLowerAscii()
+  if info.len > 0 and info != "json":
+    return ""
+  if not trimmed.endsWith("```"):
+    return ""
+  let closingStart = trimmed.len - 3
+  if closingStart <= firstNewline:
+    return ""
+  let inner = trimmed[firstNewline + 1 ..< closingStart].strip()
+  if "```" in inner:
+    return ""
+  inner
+
 proc parseOrderText*(text: string, role: Role, at: Point,
                      crateList: seq[Crate]): Order =
-  let trimmed = text.strip()
+  let trimmed = unwrapSingleJsonFence(text)
   if trimmed.len == 0 or trimmed[0] != '{':
     raise newException(LanternError, "reply must be a single JSON object")
   let payload =

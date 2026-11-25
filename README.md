@@ -20,10 +20,17 @@ field a prompt player:
 ```bash
 coworld upload-policy coworld-lantern:latest --name my-lantern \
   --run /bin/lantern-player \
+  --use-llm --llm-model anthropic/claude-haiku-4.5 \
   --secret-env PLAYER_PROMPT="Build a warren, then vanish into it..."
 ```
 
-Two scripted baselines ship in the same image: `PLAYER_SCRIPTED=warden` and `PLAYER_SCRIPTED=moth`. Without `COWORLD_LLM_ENDPOINT`, or when a model seat fails to return a valid order, the episode ends as an explicit policy failure with no substitute move and no new scores.
+The manifest ships an ordinary selectable model player (`prompt`, configured
+with `COWORLD_LLM_ENABLED=true`, `COWORLD_LLM_MODEL=anthropic/claude-haiku-4.5`,
+and `PLAYER_PROMPT`) alongside two explicit scripted baselines (`baseline` =
+`PLAYER_SCRIPTED=warden` and `moth` = `PLAYER_SCRIPTED=moth`). Without
+`COWORLD_LLM_ENDPOINT`, or when a model seat fails to return a valid order, the
+episode ends as an explicit policy failure with no substitute move and no new
+scores.
 
 ## The shape of a match
 
@@ -141,9 +148,9 @@ The local teacher consumes only each exact private seat view. Its exports includ
 private canonical trajectories only. Serving metadata remains null. The shared
 reviewed importer owns seed-family splits and supervised rows. No platform call IDs
 are invented. Numeric bridge mode remains a separate action
-interface. Language rejection returns the exact hosted retry prompt once, followed
-by the actual game-owned fallback after a second rejection. Fallbacks are excluded
-from supervised targets. Keep corpora outside this checkout and review their
+interface. Language rejection returns the exact hosted retry prompt once,
+followed by an explicit policy failure with no substitute move after a second
+rejection. Rejected attempts are excluded from supervised targets. Keep corpora outside this checkout and review their
 contents before training. Docker contexts exclude private JSONL evidence.
 
 `COWORLD_LLM_TEMPERATURE` explicitly configures the native request in `[0,1]`;

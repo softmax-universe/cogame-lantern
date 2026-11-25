@@ -205,7 +205,7 @@ jobs:
         # scaffold-substituted default is only a fallback.
         env:
           SMOKE_SLUG: ${{ env.SLUG }}
-        run: ./tools/ci/docker_smoke.sh "${IMAGE}:ci"
+        run: python3 tools/ci/certify_with_fixture.py docker-smoke ./tools/ci/docker_smoke.sh "${IMAGE}:ci"
 
   # ---------------------------------------------------------------------
   # The static replay viewer. The platform serves THIS bundle from
@@ -315,8 +315,9 @@ jobs:
       - name: Certify ordinary mixed roster locally
         run: |
           set -euo pipefail
-          uvx --from 'coworld[auth]==0.1.56' coworld certify \
-            dist/coworld_manifest.json \
+          python3 tools/ci/certify_with_fixture.py certify dist/coworld_manifest.json -- \
+            uvx --from 'coworld[auth]==0.1.56' coworld certify \
+            '{manifest}' \
             --no-open-report \
             --timeout-seconds 300 2>&1 | tee "$RUNNER_TEMP/certify.log"
           grep -F 'Replay liveness: skipped (static replay bundle declared' \
