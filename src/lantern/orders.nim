@@ -1,10 +1,9 @@
-## The order schema: tolerant parsing, repair, and the rune-boundary caps.
+## The order schema: strict parsing, validation, and rune-boundary caps.
 ##
 ## An order is what a policy (LLM or scripted) issues once every five seconds.
 ## The control layer (`control.nim`) turns it into 120 ticks of quantised
-## control bytes. Everything a model can get wrong is repaired here rather
-## than rejected, because a rejected order costs a retry and a retry costs
-## wall clock; only a reply with no recoverable INTENT is a parse failure.
+## control bytes. Invalid orders are rejected rather than repaired into a
+## different move; after exhausting retries the episode ends as a policy failure.
 ##
 ## Every string that can reach the replay is truncated on RUNE boundaries.
 ## A byte-truncated multi-byte character renders fine in a browser and then
@@ -34,10 +33,6 @@ proc clampTarget*(x, y: int): Point =
   Point(x: clampInt(x, TargetMinX, TargetMaxX),
         y: clampInt(y, TargetMinY, TargetMaxY))
 
-proc defaultOrder*(role: Role, at: Point): Order =
-  Order(intent: defaultIntent(role), target: at, crate: -1, aim: amTarget,
-        crawl: false, note: "", say: "")
-
 proc parseIntentText*(text: string): (Intent, bool) =
   for intent in Intent:
     if $intent == text:
@@ -50,157 +45,95 @@ proc parseAimText*(text: string): (AimMode, bool) =
       return (aim, true)
   (amTarget, false)
 
-proc extractJsonObject*(text: string): JsonNode =
-  ## Pull the outermost balanced {...} out of a model reply, tolerating
-  ## markdown fences and prose on either side. Bullwhip's shape, widened to
-  ## brace matching so a prefixed sentence containing a `}` cannot truncate
-  ## the object.
-  let start = text.find('{')
-  if start < 0:
-    var head = text.strip()
-    if head.runeLen > 160:
-      head = head.runeSubStr(0, 160) & "..."
-    raise newException(LanternError,
-      "no JSON object in reply: " & head.oneLine())
-  var depth = 0
-  var inString = false
-  var escaped = false
-  for index in start ..< text.len:
-    let character = text[index]
-    if inString:
-      if escaped: escaped = false
-      elif character == '\\': escaped = true
-      elif character == '"': inString = false
-      continue
-    case character
-    of '"': inString = true
-    of '{': inc depth
-    of '}':
-      dec depth
-      if depth == 0:
-        return parseJson(text[start .. index])
-    else: discard
-  raise newException(LanternError, "unbalanced JSON object in reply")
-
-proc asInt(node: JsonNode, found: var bool): int =
-  found = false
-  if node.isNil:
-    return 0
-  case node.kind
-  of JInt:
-    found = true
-    node.getInt()
-  of JFloat:
-    found = true
-    ## The only float in the parse layer: a model that answers 612.0 means
-    ## 612. It never reaches the sim, which consumes the clamped integer.
-    int(node.getFloat())
-  of JString:
-    let text = node.getStr().strip()
-    var digits = ""
-    for character in text:
-      if character == '-' and digits.len == 0: digits.add(character)
-      elif character.isDigit: digits.add(character)
-      elif character == '.': break
-      elif digits.len > 0: break
-    if digits.len == 0 or digits == "-":
-      return 0
-    found = true
-    try: parseInt(digits) except ValueError: (found = false; 0)
-  else:
-    0
-
-proc asBool(node: JsonNode): bool =
-  if node.isNil:
-    return false
-  case node.kind
-  of JBool: node.getBool()
-  of JInt: node.getInt() != 0
-  of JString:
-    case node.getStr().strip().toLowerAscii()
-    of "true", "1", "yes": true
-    else: false
-  else: false
-
-proc repairCrate*(order: var Order, role: Role, at: Point,
-                  crateList: seq[Crate]) =
-  ## An unknown crate id becomes the nearest crate legal for the intent; when
-  ## no crate is legal the intent degrades rather than the order failing.
-  if not needsCrate(order.intent):
-    order.crate = -1
-    return
-  let want =
-    case order.intent
-    of inPush: {csLoose}
-    of inLock: {csLoose}
-    else: {csLocked}
-  if order.crate >= 0 and order.crate < crateList.len and
-      crateList[order.crate].state in want:
-    return
-  order.crate = nearestCrate(crateList, at.x, at.y, want)
-  if order.crate < 0:
-    order.intent =
-      case order.intent
-      of inPush, inLock: inHide
-      else: inSweep
-    discard
-    if role == roHider: order.intent = inHide
-    else: order.intent = inSweep
-
 proc parseOrder*(payload: JsonNode, role: Role, at: Point,
                  crateList: seq[Crate]): Order =
-  ## Tolerant parse + repair. Raises only when no usable `intent` survives —
-  ## that is the single condition that costs a retry.
-  result = defaultOrder(role, at)
+  ## Strict order parse and legality check. Raises `LanternError` on any
+  ## invalid field, wrong-role intent, or illegal crate reference.
   if payload.isNil or payload.kind != JObject:
     raise newException(LanternError, "order is not a JSON object")
   let intentNode = payload{"intent"}
   if intentNode.isNil or intentNode.kind != JString:
     raise newException(LanternError, "order carries no intent")
-  let (intent, known) = parseIntentText(intentNode.getStr().strip().toLowerAscii())
+  let (intent, known) = parseIntentText(intentNode.getStr())
   if not known:
     raise newException(LanternError,
       "unknown intent: " & clip(intentNode.getStr(), 32))
-  result.intent = (if legalFor(intent, role): intent else: defaultIntent(role))
+  if not legalFor(intent, role):
+    raise newException(LanternError,
+      "intent " & $intent & " is not legal for " & $role)
 
-  var haveX, haveY = false
-  var tx, ty = 0
+  result = Order(intent: intent, target: clampTarget(at.x, at.y), crate: -1,
+                 aim: amTarget, crawl: false, note: "", say: "")
+
   let targetNode = payload{"target"}
-  if not targetNode.isNil and targetNode.kind == JArray and
-      targetNode.len >= 2:
-    tx = asInt(targetNode[0], haveX)
-    ty = asInt(targetNode[1], haveY)
-  elif not targetNode.isNil and targetNode.kind == JObject:
-    tx = asInt(targetNode{"x"}, haveX)
-    ty = asInt(targetNode{"y"}, haveY)
-  result.target =
-    if haveX and haveY: clampTarget(tx, ty)
-    else: clampTarget(at.x, at.y)
+  if not targetNode.isNil and targetNode.kind != JNull:
+    if targetNode.kind != JArray or targetNode.len != 2 or
+        targetNode[0].kind != JInt or targetNode[1].kind != JInt:
+      raise newException(LanternError, "target must be [int, int]")
+    result.target = clampTarget(targetNode[0].getInt(), targetNode[1].getInt())
 
   let crateNode = payload{"crate"}
-  result.crate = -1
-  if not crateNode.isNil:
-    case crateNode.kind
-    of JString:
-      result.crate = parseCrateId(clip(crateNode.getStr(), MaxCrateIdRunes),
-                                  crateList.len)
-    of JInt:
-      let value = crateNode.getInt()
-      if value >= 0 and value < crateList.len:
-        result.crate = value
-    else: discard
-  repairCrate(result, role, at, crateList)
+  if needsCrate(intent):
+    if crateNode.isNil or crateNode.kind != JString:
+      raise newException(LanternError,
+        "intent " & $intent & " requires a canonical crate id")
+    let index = parseCrateId(crateNode.getStr(), crateList.len)
+    if index < 0:
+      raise newException(LanternError,
+        "unknown crate id: " & clip(crateNode.getStr(), MaxCrateIdRunes))
+    let want =
+      case intent
+      of inPush, inLock: {csLoose}
+      else: {csLocked}
+    if crateList[index].state notin want:
+      raise newException(LanternError,
+        "crate " & crateId(index) & " is not legal for " & $intent)
+    result.crate = index
+  elif not crateNode.isNil and crateNode.kind != JNull:
+    raise newException(LanternError,
+      "crate must be null for intent " & $intent)
 
-  let (aim, aimKnown) = parseAimText(
-    payload{"aim"}.getStr().strip().toLowerAscii())
-  result.aim = (if aimKnown: aim else: amTarget)
-  result.crawl = (if role == roSeeker: false else: asBool(payload{"crawl"}))
-  result.note = clip(oneLine(payload{"note"}.getStr()), MaxNoteRunes)
-  result.say = clip(oneLine(payload{"say"}.getStr()), MaxSayRunes)
+  let aimNode = payload{"aim"}
+  if not aimNode.isNil and aimNode.kind != JNull:
+    if aimNode.kind != JString:
+      raise newException(LanternError, "aim must be a string")
+    let (aim, aimKnown) = parseAimText(aimNode.getStr())
+    if not aimKnown:
+      raise newException(LanternError,
+        "unknown aim: " & clip(aimNode.getStr(), 32))
+    result.aim = aim
+
+  let crawlNode = payload{"crawl"}
+  if not crawlNode.isNil and crawlNode.kind != JNull:
+    if crawlNode.kind != JBool:
+      raise newException(LanternError, "crawl must be a boolean")
+    let crawl = crawlNode.getBool()
+    if role == roSeeker and crawl:
+      raise newException(LanternError, "seekers cannot crawl")
+    result.crawl = crawl
+
+  let noteNode = payload{"note"}
+  if not noteNode.isNil and noteNode.kind != JNull:
+    if noteNode.kind != JString:
+      raise newException(LanternError, "note must be a string")
+    result.note = clip(oneLine(noteNode.getStr()), MaxNoteRunes)
+
+  let sayNode = payload{"say"}
+  if not sayNode.isNil and sayNode.kind != JNull:
+    if sayNode.kind != JString:
+      raise newException(LanternError, "say must be a string")
+    result.say = clip(oneLine(sayNode.getStr()), MaxSayRunes)
 
 proc parseOrderText*(text: string, role: Role, at: Point,
                      crateList: seq[Crate]): Order =
-  parseOrder(extractJsonObject(text), role, at, crateList)
+  let trimmed = text.strip()
+  if trimmed.len == 0 or trimmed[0] != '{':
+    raise newException(LanternError, "reply must be a single JSON object")
+  let payload =
+    try: parseJson(trimmed)
+    except CatchableError as error:
+      raise newException(LanternError, "invalid JSON order: " & error.msg)
+  parseOrder(payload, role, at, crateList)
 
 proc orderJson*(order: Order): JsonNode =
   %*{"intent": $order.intent,

@@ -12,11 +12,18 @@ var
   deadlines: seq[int]
 
 proc actionFor(request: JsonNode): string =
+  let role = request["role"].getStr()
+  let order =
+    if role == "hider":
+      %*{"intent": "hide", "target": [240, 329],
+         "crawl": true, "note": "settling behind a crate"}
+    else:
+      %*{"intent": "sweep", "target": [240, 329],
+         "aim": "sweep", "crawl": false, "note": "sweeping west"}
   $ %*{
     "type": "action", "protocol": "lantern.player.v3",
     "decision_id": request["decision_id"], "source": "external", "training_attempt": nil,
-    "order": {"intent": "hide", "target": [240, 329],
-              "crawl": true, "note": "settling behind a crate"}
+    "response": $order
   }
 
 proc exchange(requests: seq[JsonNode], timeoutMs: int):
@@ -69,7 +76,7 @@ suite "ordinary player decisions":
     for request in batches[0]:
       check request["observation"]["half"].getInt() == 1
 
-  test "an invalid action retries once and then plays warden":
+  test "an invalid action retries once and then fails without a substitute move":
     let sim = testSim()
     reset(invalid)
     let decisions = decideAll(PromptSelection(), sim, 1, activeSeats(sim, 1, actBuild),
@@ -77,12 +84,13 @@ suite "ordinary player decisions":
     check deadlines == @[sim.config.attempt1Ms, sim.config.attempt2Ms]
     check batches.len == 2
     for decision in decisions:
-      check decision.source == osFallback
+      check decision.failed
+      check decision.failureCause == fcParseError
+      check decision.selectedAttemptId.isNone
       check decision.notes.len == 2
       check decision.notes[0].cause == fcParseError
-      check legalFor(decision.order.intent, roHider)
 
-  test "missing replies share bounded deadlines":
+  test "missing replies share bounded deadlines and fail without a substitute move":
     let sim = testSim()
     reset(missing)
     let decisions = decideAll(PromptSelection(), sim, 1, activeSeats(sim, 1, actBuild),
@@ -90,17 +98,21 @@ suite "ordinary player decisions":
     check batches.len == 2
     check deadlines == @[8500, 3500]
     for decision in decisions:
-      check decision.source == osFallback
+      check decision.failed
+      check decision.failureCause == fcTimeout
+      check decision.selectedAttemptId.isNone
       check decision.notes[0].cause == fcTimeout
 
-  test "credential-free players report fallback without a retry":
+  test "credential-free players report policy failure without a retry or substitute move":
     let sim = testSim()
     reset(noCredentials)
     let decisions = decideAll(PromptSelection(), sim, 1, activeSeats(sim, 1, actBuild),
       newSeq[ScriptKind](sim.seats), false, exchange)
     check batches.len == 1
     for decision in decisions:
-      check decision.source == osFallback
+      check decision.failed
+      check decision.failureCause == fcNoCredentials
+      check decision.selectedAttemptId.isNone
       check decision.notes.len == 1
       check decision.notes[0].cause == fcNoCredentials
 
@@ -114,14 +126,16 @@ suite "ordinary player decisions":
     check batches[0].len == TeamSize - 1
     check decisions[0].source == osScripted
 
-  test "the budget guard keeps orders game-owned":
+  test "the budget guard fails model seats without fabricating a move":
     let sim = testSim()
     reset(valid)
     let decisions = decideAll(PromptSelection(), sim, 1, activeSeats(sim, 1, actBuild),
       newSeq[ScriptKind](sim.seats), true, exchange)
     check batches.len == 0
     for decision in decisions:
-      check decision.source == osFallback
+      check decision.failed
+      check decision.failureCause == fcBudgetGuard
+      check decision.selectedAttemptId.isNone
       check decision.notes[0].cause == fcBudgetGuard
 
 suite "the roster":
@@ -186,19 +200,27 @@ suite "result and replay on interrupted episodes":
     for origin in [aoTeacher, aoHuman]:
       let evidence = newDecisionAttempt("asserted", "external-policy", origin)
       let reply = %*{"type": "action", "protocol": "lantern.player.v3", "decision_id": "fixture-1",
-        "source": "llm", "order": {"intent": "wait"},
+        "source": "llm", "response": """{"intent":"wait"}""",
         "training_attempt": evidence.attemptEvidenceJson()}
       let proposal = playerProposal($reply, "fixture-1", 0, 1, sim)
       check proposal.kind == pkAccepted
       check proposal.evidence.origin == aoUnknown
       check proposal.evidence.accepted
 
+  test "legacy order object without response string is rejected":
+    let sim = testSim(prep = 240, hunt = 480)
+    let reply = %*{"type": "action", "protocol": "lantern.player.v3", "decision_id": "fixture-1",
+      "source": "external", "order": {"intent": "wait"}, "training_attempt": nil}
+    let proposal = playerProposal($reply, "fixture-1", 0, 1, sim)
+    check proposal.kind == pkRejected
+    check not proposal.evidence.accepted
+
   test "model evidence cannot label a different installed order":
     let sim = testSim(prep = 240, hunt = 480)
     var evidence = newDecisionAttempt("sampled", "model-policy", aoModel)
     evidence.response = %"{\"intent\":\"wait\"}"
     let reply = %*{"type": "action", "protocol": "lantern.player.v3", "decision_id": "fixture-1",
-      "source": "llm", "order": {"intent": "hide", "target": [240, 329]},
+      "source": "llm", "response": """{"intent":"hide","target":[240,329]}""",
       "training_attempt": evidence.attemptEvidenceJson()}
     let proposal = playerProposal($reply, "fixture-1", 0, 1, sim)
     check proposal.kind == pkRejected

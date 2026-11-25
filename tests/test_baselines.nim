@@ -84,12 +84,12 @@ suite "the scripted baselines":
     check pushes > 0
     check sim.countEvents("crate_lock") == locks
 
-  test "PLAYER_SCRIPTED parsing follows the documented spellings":
+  test "PLAYER_SCRIPTED parsing accepts only explicit baseline names":
     check parseScriptKind("warden") == skWarden
     check parseScriptKind("WARDEN") == skWarden
-    check parseScriptKind("1") == skWarden
-    check parseScriptKind("true") == skWarden
-    check parseScriptKind("yes") == skWarden
     check parseScriptKind("moth") == skMoth
+    check parseScriptKind("1") == skNone
+    check parseScriptKind("true") == skNone
+    check parseScriptKind("yes") == skNone
     check parseScriptKind("") == skNone
     check parseScriptKind("banana") == skNone

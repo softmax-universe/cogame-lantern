@@ -20,22 +20,33 @@ def main(game_bin: str, player_bin: str) -> None:
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
-            json.loads(self.rfile.read(int(self.headers["content-length"])))
+            request = json.loads(self.rfile.read(int(self.headers["content-length"])))
             assert self.path == "/v1/messages"
             calls.append(("prompt", 0, ()))
+            user_text = request["messages"][0]["content"]
+            is_hider = '"crates":' in user_text and '"lit":' not in user_text
+            order = (
+                {
+                    "intent": "hide",
+                    "target": [240, 329],
+                    "crawl": True,
+                    "note": "prompt-stub",
+                }
+                if is_hider
+                else {
+                    "intent": "sweep",
+                    "target": [240, 329],
+                    "aim": "sweep",
+                    "crawl": False,
+                    "note": "prompt-stub",
+                }
+            )
             response = {
                 "model": "fixture/served",
                 "content": [
                     {
                         "type": "text",
-                        "text": json.dumps(
-                            {
-                                "intent": "hide",
-                                "target": [240, 329],
-                                "crawl": True,
-                                "note": "prompt-stub",
-                            }
-                        ),
+                        "text": json.dumps(order),
                     }
                 ],
                 "stop_reason": "end_turn",
@@ -84,23 +95,23 @@ def main(game_bin: str, player_bin: str) -> None:
                     stderr=subprocess.STDOUT,
                 )
             )
-            by_id = {player["id"]: player for player in manifest["player"]}
-            for slot, seated in enumerate(manifest["certification"]["players"]):
-                player = by_id[seated["player_id"]]
-                player_env = (
-                    base_env
-                    | player["env"]
-                    | {
-                        "COWORLD_PLAYER_WS_URL": (
-                            f"ws://127.0.0.1:{game_port}/player?slot={slot}"
-                            f"&token=policy-smoke-{slot}"
-                        ),
-                    }
-                )
-                if seated["player_id"] == "prompt":
+            for slot in range(6):
+                player_env = base_env | {
+                    "COWORLD_PLAYER_WS_URL": (
+                        f"ws://127.0.0.1:{game_port}/player?slot={slot}"
+                        f"&token=policy-smoke-{slot}"
+                    ),
+                }
+                if slot == 1:
+                    player_env["PLAYER_PROMPT"] = (
+                        "Play both roles: build and hide behind crates; "
+                        "sweep toward sounds and chase lit hiders."
+                    )
                     player_env["COWORLD_LLM_ENDPOINT"] = (
                         f"http://127.0.0.1:{server.server_port}"
                     )
+                else:
+                    player_env["PLAYER_SCRIPTED"] = "warden" if slot % 2 == 0 else "moth"
                 log = (out / f"player-{slot}.log").open("w")
                 logs.append(log)
                 processes.append(

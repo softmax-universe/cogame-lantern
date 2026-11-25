@@ -54,12 +54,26 @@ def play(binary: Path, variant: str, teacher: bool, language: bool = False) -> N
             if teacher:
                 action = json.loads(request({"kind": "teacher"})["response"])
             elif language:
+                legal = ["wait", "hide"] if "crates" in view else ["wait", "sweep"]
                 action = {
-                    "intent": rng.choice(["wait", "hide", "sweep"]),
+                    "intent": rng.choice(legal),
                     "target": [240, 329],
                 }
             else:
-                action = {head["name"]: rng.choice(head["choices"]) for head in heads}
+                is_hider = "crates" in view
+                legal_intents = (
+                    ["hide", "flee", "scout", "wait"]
+                    if is_hider
+                    else ["sweep", "beeline", "chase", "hold", "wait"]
+                )
+                action = {
+                    "intent": rng.choice(legal_intents),
+                    "target_x": rng.choice(heads[1]["choices"]),
+                    "target_y": rng.choice(heads[2]["choices"]),
+                    "crate": -1,
+                    "aim": rng.choice(heads[4]["choices"]),
+                    "crawl": rng.choice(heads[5]["choices"]) if is_hider else False,
+                }
             result = request(
                 {
                     "kind": "step",
@@ -183,17 +197,15 @@ def check_language_rejections(binary: Path) -> None:
             "Your previous reply was invalid"
             in retry["observation"]["messages"][1]["content"]
         )
-        consumed = request(
+        failed = request(
             {
                 "kind": "step",
                 "decision_id": initial["decision_id"],
                 "response": "invalid",
             }
         )
-        assert (
-            consumed["kind"] == "consumed_rejection" and "intent" in consumed["action"]
-        )
-        assert consumed["observation"]["decision_id"] == initial["decision_id"] + 1
+        assert failed["kind"] == "failed" and "action" not in failed
+        assert failed["observation"] == {"kind": "terminal", "scores": None}
         process.stdin.close()
         assert process.wait(timeout=5) == 0
 

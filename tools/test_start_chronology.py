@@ -52,7 +52,9 @@ try:
     for process in processes: assert process.wait(timeout=30) == 0
     events = [json.loads(line) for line in (OUTPUT / "trajectory.jsonl").read_text().splitlines()]
     decisions, episode = events[:-1], events[-1]
-    assert episode["status"] == "completed" and len(decisions) == 30
+    assert episode["status"] == "failed" and episode["participant_outcomes"] is None
+    assert not (OUTPUT / "results.json").exists() and not (OUTPUT / "replay.json").exists()
+    assert len(decisions) == 3
     assert all(decision["selected_attempt_id"] is None for decision in decisions)
     assert all(not attempt["accepted"] for decision in decisions for attempt in decision["attempts"])
     print(MODE, "invalid chronology rejected across", len(decisions), "authoritative decisions; zero selected model labels")

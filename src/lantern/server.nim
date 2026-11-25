@@ -13,7 +13,7 @@
 ##   player -> game: {"type":"register","kind":...,"scripted":...,"policy":...}
 ##   game -> player: {"type":"welcome",...}
 ##                   {"type":"decision","decision_id":...,"observation":...}
-##   player -> game: {"type":"action","order":...}
+##   player -> game: {"type":"action","response":...}
 ##                   {"type":"turn","turn":N,"tick":T,"half":H,"act":...,
 ##                    "role":...,"view":{...},"order_source":...}
 ##                   {"done":true,"result":{...}}
@@ -241,7 +241,10 @@ proc runEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
     var reason = erComplete
     var rule = edFullTime
-    var guardEngaged = false
+    var policyFailure = none(tuple[slot: int, cause: FallbackCause, detail: string])
+    var failedTurnTick = -1
+    var failedTurnSeats: seq[int]
+    var failedTurnDecisions: seq[Decision]
     let total = totalTicks(config)
     let wallDeadline = min(state.episodeDeadline - initDuration(seconds = 5),
       start + initDuration(milliseconds = config.wallClockBudgetMs))
@@ -289,26 +292,46 @@ proc runEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           if trajectoryUri.len > 0:
             withLock stateLock:
               completedMacros.add(collectMacros(state.sim, pendingMacros))
-          ## The budget guard settles early rather than overrunning: once two
-          ## more full turn budgets would not fit, every remaining turn is
-          ## played on the scripted layer (well under a millisecond a turn),
-          ## so the episode ends complete/full_time instead of deadline.
+          var hasModelSeat = false
+          for slot in seats:
+            if scripted[slot] == skNone:
+              hasModelSeat = true
+              break
           let remainingMs = max(0, (wallDeadline - getMonoTime()).inMilliseconds.int)
-          if not guardEngaged and remainingMs < 2 * config.turnBudgetMs:
-            guardEngaged = true
+          if hasModelSeat and remainingMs < 2 * config.turnBudgetMs:
             withLock stateLock:
               state.sim.emit(budgetGuardEvent(state.sim.tick,
                 phaseAt(config, state.sim.tick).turn, remainingMs))
-            echo "lantern: budget guard engaged with ", remainingMs,
-              " ms left; the rest of the match plays scripted"
+            echo "lantern: wall-clock budget too low for another model turn (",
+              remainingMs, " ms left); stopping episode"
+            reason = erDeadline
+            rule = edWallClock
+            break
 
           let decisions =
             if seats.len == 0: @[]
             else: decideAll(state.selection, simRef, half, seats, scripted,
-                            guardEngaged, exchangeDecisions)
+                            false, exchangeDecisions)
           if interruptionRequested():
             reason = erDeadline
             rule = edWallClock
+            break
+          var failedIndex = -1
+          for index, decision in decisions:
+            if decision.failed:
+              failedIndex = index
+              break
+          if failedIndex >= 0:
+            let failedSeat = seats[failedIndex]
+            let failed = decisions[failedIndex]
+            policyFailure = some((slot: failedSeat, cause: failed.failureCause,
+              detail: clip(failed.failureDetail, MaxDetailRunes)))
+            withLock stateLock:
+              failedTurnTick = state.sim.tick
+            failedTurnSeats = seats
+            failedTurnDecisions = decisions
+            reason = erFault
+            rule = edHostError
             break
           var sources: Table[int, string]
           withLock stateLock:
@@ -424,6 +447,23 @@ proc runEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
               received.rejectionReason = attempt.rejectionReason
               attempt = received
           trajectory.recordMacro(completed)
+        for index, slot in failedTurnSeats:
+          var decision = failedTurnDecisions[index]
+          for attempt in decision.attempts.mitems:
+            let dash = attempt.attemptId.rfind('-')
+            let id = if dash > 0: attempt.attemptId[0 ..< dash] else: attempt.attemptId
+            represented.incl(id)
+            if state.completedAttempts.hasKey(id):
+              var received = readAttemptEvidence(state.completedAttempts[id])
+              if received.origin in {aoTeacher, aoHuman}: received.origin = aoUnknown
+              received.accepted = attempt.accepted
+              received.parsedAction = attempt.parsedAction
+              received.rejectionReason = attempt.rejectionReason
+              attempt = received
+          let status = if decision.failed: asRejected else: asMissing
+          trajectory.recordDecision($failedTurnTick & "-" & $slot, $slot,
+            privateObservation(state.selection, decision.observation, decision.attempts),
+            decision.attempts, none(string), newJNull(), status, terminal = true)
         # A stop or owner failure can happen after issuance but before order installation.
         # These attempts have no executed action or invented control interval.
         for id, slot in state.decisionSeats:
@@ -445,6 +485,10 @@ proc runEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         let privateOutcome = copy(results)
         privateOutcome["player_cleanup"] = cleanup
         privateOutcome["runtime_inputs"] = copy(state.runtimeInputs)
+        if policyFailure.isSome:
+          let pf = policyFailure.get()
+          privateOutcome["policy_failure"] = %*{"slot": pf.slot,
+            "cause": $pf.cause, "detail": pf.detail}
         trajectory.finish(status, privateOutcome,
           if status == esCompleted: outcomes else: newJNull())
       state.lastResults = results
@@ -460,6 +504,12 @@ proc runEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         of "POST": ahPost
         else: raise newException(LanternError, "trajectory method must be PUT or POST")
       trajectory.writeTrajectoryArtifact(trajectoryUri, cleanupDeadline, httpMethod)
+    if policyFailure.isSome:
+      let pf = policyFailure.get()
+      writeArtifact(getEnv("COGAME_PLAYER_FAILURE_URI"),
+        $ %*{"slot": pf.slot, "cause": $pf.cause,
+             "reason": "policy decision failed (" & $pf.cause & ")"},
+        "application/json", "COGAME_PLAYER_FAILURE_METHOD", cleanupDeadline)
     if not interruptionRequested() and reason in {erComplete, erDeadline}:
       if missing.len > 0:
         writeArtifact(getEnv("COGAME_PLAYER_FAILURE_URI"),

@@ -13,7 +13,7 @@ TRAIN = ["canonical", "plain", "numbered", "questions", "reordered"]
 WORDINGS = TRAIN + ["heldout-briefing", "heldout-reference"]
 
 
-def play(binary, variant, wording, seed, language, prompt_seed=0, original=False):
+def play(binary, variant, wording, seed, language, prompt_seed=0):
     error_log = tempfile.TemporaryFile(mode="w+")
     process = subprocess.Popen(
         [
@@ -51,26 +51,20 @@ def play(binary, variant, wording, seed, language, prompt_seed=0, original=False
         )
         while observation["kind"] == "decision":
             system, user = (message["content"] for message in observation["messages"])
-            if original:
-                system = system.replace(
-                    "Each half has two acts. In the BUILD act (30 s) the hiding",
-                    "Each half has two acts; their remaining times are in your observation's clock.\nIn the BUILD act the hiding",
-                ).replace("In the HUNT act (75 s)", "In the HUNT act")
             seat = observation["seat"]
             view = observation["semantic_view"]
-            if not original:
-                metadata = view.pop("prompt_template")
-                assert metadata["bank"] == "lantern-rules-v3"
-                assert metadata["variant"] == (
-                    TRAIN[prompt_seed % 5] if wording == "mixed" else wording
-                )
-                assert (
-                    metadata["system_sha256"]
-                    == hashlib.sha256(system.encode()).hexdigest()
-                )
-                assert (
-                    metadata["user_sha256"] == hashlib.sha256(user.encode()).hexdigest()
-                )
+            metadata = view.pop("prompt_template")
+            assert metadata["bank"] == "lantern-rules-v3"
+            assert metadata["variant"] == (
+                TRAIN[prompt_seed % 5] if wording == "mixed" else wording
+            )
+            assert (
+                metadata["system_sha256"]
+                == hashlib.sha256(system.encode()).hexdigest()
+            )
+            assert (
+                metadata["user_sha256"] == hashlib.sha256(user.encode()).hexdigest()
+            )
             assert "players" not in view and "seed" not in view
             if seat in systems:
                 assert systems[seat] == system
@@ -140,15 +134,6 @@ if __name__ == "__main__":
             for seed in ("wording-1",):
                 reference = play(binary, variant, "canonical", seed, language)
                 count += 1
-                if len(sys.argv) == 3:
-                    assert reference == play(
-                        Path(sys.argv[2]).resolve(),
-                        variant,
-                        "canonical",
-                        seed,
-                        language,
-                        original=True,
-                    )
                 for wording in WORDINGS[1:]:
                     actual = play(binary, variant, wording, seed, language)
                     assert actual[:2] == reference[:2]

@@ -18,8 +18,8 @@ On connect the player declares a policy kind. Model prompts remain inside that p
  "policy": "<free label, <= 48 runes>"}
 ```
 
-`PLAYER_SCRIPTED` parsing: `warden` / `1` / `true` / `yes` selects the warden
-baseline; `moth` selects moth. A seat that never registers plays `warden`.
+`PLAYER_SCRIPTED` parsing: `warden` selects the warden baseline; `moth` selects
+moth. A seat that never connects plays `warden`.
 The player caps its own prompt at 4000 runes.
 
 The server answers `welcome`. At each active model turn it sends one private
@@ -50,8 +50,10 @@ The game selects one rules wording for the episode. The native player consumes
 `prompt_configuration` and rejects changes between decisions. This configuration
 does not enter the private view or alter simulation randomness.
 With no native sidecar endpoint, a model player replies with `source: "fallback"`
-and `cause: "no_endpoint"`. The game applies its warden baseline and
-records the cause.
+and `cause: "no_endpoint"`. The game terminates the episode as an explicit policy
+failure with no substitute move and no published scores, recording the failure to
+`COGAME_PLAYER_FAILURE_URI` and retaining any attempt evidence in the private
+trajectory.
 
 ## The per-seat view
 
@@ -121,36 +123,35 @@ two policy kinds are strictly comparable.
  "note": "screening the west alcove before the lights go", "say": "west screen"}
 ```
 
-| field | legal values | repair when violated |
+| field | legal values | when violated |
 |---|---|---|
-| `intent` | hider: `push` `lock` `hide` `flee` `scout` `wait`; seeker: `sweep` `beeline` `chase` `pry` `hold` `wait` | legal-for-the-other-role → `hide` / `sweep`; unknown → a retry |
-| `target` | `[int, int]`, clamped to x ∈ [8, 1227], y ∈ [8, 651] | missing → the cog's current position |
-| `crate` | `"C0"`…`"C9"`, case-insensitive, ≤ 4 runes; an integer 0–9 also accepted | unknown → the nearest crate legal for the intent; none legal → the intent degrades |
-| `aim` | `sweep` `hold` `track` `target` | → `target`; ignored for hiders |
-| `crawl` | `true`/`false`, also `"true"`/`"false"`/`0`/`1` | → `false`; forced `false` for a seeker |
-| `note` | ≤ 140 **runes** | truncated on a rune boundary |
-| `say` | ≤ 32 **runes** | truncated on a rune boundary |
+| `intent` | hider: `push` `lock` `hide` `flee` `scout` `wait`; seeker: `sweep` `beeline` `chase` `pry` `hold` `wait` | missing, unknown, or illegal for role → rejected (retry) |
+| `target` | `[int, int]`, clamped to x ∈ [8, 1227], y ∈ [8, 651]; omitted/`null` → cog's current position | wrong type or shape → rejected (retry) |
+| `crate` | `"C0"`…`"C9"` in a legal state (`loose` for `push`/`lock`, `locked` for `pry`), or `null`/omitted for other intents | missing, non-canonical, wrong state, or unexpected → rejected (retry) |
+| `aim` | `sweep` `hold` `track` `target`; omitted/`null` → `target` | unknown or non-string → rejected (retry) |
+| `crawl` | `true`/`false` (hiders only); omitted/`null` → `false` | non-boolean or `true` for a seeker → rejected (retry) |
+| `note` | string ≤ 140 **runes**; omitted/`null` → `""` | non-string → rejected; long string truncated on a rune boundary |
+| `say` | string ≤ 32 **runes**; omitted/`null` → `""` | non-string → rejected; long string truncated on a rune boundary |
 
 Two further caps on strings that reach the replay: `register.policy` ≤ 48
 runes and `fallback.detail` ≤ 200 runes. **Truncation is on rune boundaries,
 never bytes** — a byte-truncated
 multi-byte character renders in a browser and then fails a strict JSON parser.
 
-Parsing is tolerant: markdown fences are stripped, the outermost balanced
-`{…}` is taken if the model prefixed prose, numeric strings are accepted for
-`target`, and `crate` may be an integer. Only when no object with a usable
-`intent` can be recovered does the retry fire, and only when the retry also
-fails does the seat get the `warden` order plus a `fallback` event.
+Parsing is strict: the reply must be a single JSON object starting with `{`,
+carrying canonical field types and a role-legal `intent`. Any invalid reply
+triggers the one retry; if the retry also fails, the episode ends as an explicit
+policy failure with no substitute move and no published scores.
 
 ## Decisions and timing
 
 The game sends all active model seats' private views before waiting for any
 reply. A hunt turn can ask six seats; a build turn asks three. Per turn, per
-seat: attempt 1 gets 8.5 s, the one retry gets 3.5 s, then the scripted
-order. At the start of each turn, if two more full turn budgets would
-not fit inside `wallClockBudgetSeconds`, the **budget guard** engages and every
-remaining turn plays scripted, so the episode ends `complete/full_time` rather
-than `deadline`.
+seat: attempt 1 gets 8.5 s, the one retry gets 3.5 s, then an explicit policy
+failure if no valid order was received. At the start of each turn, if two more
+full turn budgets would not fit inside `wallClockBudgetSeconds` and any active
+seat is a model seat, the episode stops cleanly as `deadline`/`wall_clock`
+without fabricating model moves.
 
 ## Spectator stream — `/global`
 
@@ -242,8 +243,8 @@ player pods down the moment `results.json` exists.
 
 Native players send an `attempt_started` frame with the current string `decision_id` and
 strict `training_attempt` before making the HTTP request. They return the completed
-attempt on `action`; external policies may instead return an ordinary `order`
-object with `source: "external"` and `training_attempt: null`. Such actions retain unknown origin and cannot become
+attempt on `action`; external policies return the same `response` JSON string
+with `source: "external"` and `training_attempt: null`. Such actions retain unknown origin and cannot become
 model training labels. Only the game assigns parsed action, acceptance, and the
 selected attempt after applying the ordinary parser.
 

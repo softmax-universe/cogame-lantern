@@ -196,8 +196,9 @@ proc action(order: Order): JsonNode =
     "aim": $order.aim, "crawl": order.crawl}
 
 proc hostedOrder(candidate: JsonNode): JsonNode =
+  let crate = candidate["crate"].getInt()
   %*{"intent": candidate["intent"], "target": [candidate["target_x"],
-    candidate["target_y"]], "crate": candidate["crate"],
+    candidate["target_y"]], "crate": (if crate < 0: newJNull() else: %crateId(crate)),
     "aim": candidate["aim"], "crawl": candidate["crawl"]}
 
 var selection: PromptSelection
@@ -299,7 +300,6 @@ when isMainModule:
       let phase = phaseAt(game.config, game.tick)
       let cog = game.cogs[seat]
       var parsed: Order
-      var consumed = false
       var rejection = ""
       if languageMode:
         let wireId = "lantern-bridge-" & $id
@@ -309,14 +309,16 @@ when isMainModule:
         doAssert proposal.kind != pkInterrupted
         if proposal.kind == pkRejected:
           inc rejectedAttempts
-          rejection = "invalid private player reply"
+          rejection = proposal.detail
           if rejectedAttempts == 1:
             stdout.writeLine($(%*{"kind": "rejected", "reason": rejection,
               "observation": views[seat].decision(seat, id, retry = true)}))
             stdout.flushFile()
             continue
-          parsed = scriptedOrder(game, seat, phase.half, skWarden)
-          consumed = true
+          stdout.writeLine($(%*{"kind": "failed", "reason": rejection,
+            "observation": {"kind": "terminal", "scores": newJNull()}}))
+          stdout.flushFile()
+          continue
         else: parsed = proposal.order
       else:
         let candidate = parseJson(request["response"].getStr())
@@ -357,10 +359,9 @@ when isMainModule:
         else:
           index = 0
           observation = views[active[index]].decision(active[index], id)
-      response = %*{"kind": (if consumed: "consumed_rejection" else: "accepted"),
+      response = %*{"kind": "accepted",
         "action": (if languageMode: orderJson(parsed) else: action(parsed)),
         "observation": observation}
-      if consumed: response["reason"] = %rejection
     else:
       raise newException(ValueError, "unknown command: " & request["kind"].getStr())
     stdout.writeLine($response)

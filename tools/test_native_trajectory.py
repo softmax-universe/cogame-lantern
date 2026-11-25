@@ -183,6 +183,7 @@ for flow in (
             "COGAME_CONFIG_URI": f"http://127.0.0.1:{provider.server_port}/config",
             "COGAME_RESULTS_URI": (output / "results.json").as_uri(),
             "COGAME_SAVE_REPLAY_URI": (output / "replay.json").as_uri(),
+            "COGAME_PLAYER_FAILURE_URI": (output / "player_failure.json").as_uri(),
             "COGAME_SAVE_TRAJECTORY_URI": (output / "trajectory.jsonl").as_uri(),
             "COWORLD_EPISODE_ID": str(uuid.uuid4()),
             "COWORLD_GAME_VERSION": "native-fixture-v1",
@@ -240,10 +241,30 @@ for flow in (
                 for line in (output / "trajectory.jsonl").read_text().splitlines()
             ]
             decisions, episode = events[:-1], events[-1]
-            assert (
-                episode["status"] == "completed"
-                and episode["outcome"]["final_tick"] == 144
-            )
+            failure_flows = {
+                "invalid",
+                "provider-error",
+                "malformed-json",
+                "malformed-schema",
+                "invalid-token-types",
+                "greedy-tokens",
+                "temperature-mismatch",
+            }
+            is_failure = flow in failure_flows
+            if is_failure:
+                assert episode["status"] == "failed"
+                assert episode["participant_outcomes"] is None
+                assert episode["outcome"]["policy_failure"]["slot"] == 0
+                assert not (output / "results.json").exists()
+                assert not (output / "replay.json").exists()
+                failure_doc = json.loads((output / "player_failure.json").read_text())
+                assert failure_doc["slot"] == 0
+            else:
+                assert (
+                    episode["status"] == "completed"
+                    and episode["outcome"]["final_tick"] == 144
+                )
+                assert not (output / "player_failure.json").exists()
             captures = episode["outcome"]["runtime_inputs"]
             assert len(captures) == 1 and captures[0]["uri"] == env["COGAME_CONFIG_URI"]
             assert captures[0]["transport"]["response_reader_joined"] is True
@@ -253,24 +274,29 @@ for flow in (
                 )
                 == config
             )
-            assert "runtime_inputs" not in (output / "results.json").read_text()
+            if not is_failure:
+                assert "runtime_inputs" not in (output / "results.json").read_text()
             assert (output / "trajectory.jsonl").stat().st_mode & 0o777 == 0o600
-            replay = json.loads((output / "replay.json").read_text())
-            controls = base64.b64decode(replay["controls_b64"])
-            assert len(controls) == 144 * 6 * 4
+            controls = None
+            if not is_failure:
+                replay = json.loads((output / "replay.json").read_text())
+                controls = base64.b64decode(replay["controls_b64"])
+                assert len(controls) == 144 * 6 * 4
             seen = set()
             for decision in decisions:
                 execution = decision["execution"]
                 slot = int(decision["seat"])
-                assert (
-                    execution["tick_hz"] == 24
-                    and execution["control_encoding"] == "i8-i8-i8-u8"
-                )
-                actual = b"".join(
-                    controls[(tick * 6 + slot) * 4 : (tick * 6 + slot + 1) * 4]
-                    for tick in range(execution["start_tick"], execution["end_tick"])
-                )
-                assert base64.b64decode(execution["seat_controls_b64"]) == actual
+                if execution is not None:
+                    assert controls is not None
+                    assert (
+                        execution["tick_hz"] == 24
+                        and execution["control_encoding"] == "i8-i8-i8-u8"
+                    )
+                    actual = b"".join(
+                        controls[(tick * 6 + slot) * 4 : (tick * 6 + slot + 1) * 4]
+                        for tick in range(execution["start_tick"], execution["end_tick"])
+                    )
+                    assert base64.b64decode(execution["seat_controls_b64"]) == actual
                 for attempt in decision["attempts"]:
                     assert attempt["inference_mode"] == "text_action"
                     if attempt["platform_call_id"] is None:
@@ -343,11 +369,15 @@ for flow in (
                     )
                 else:
                     assert decision["selected_attempt_id"] is None
+                    assert decision["executed_action"] is None
             assert seen == set(calls)
-            public = (output / "replay.json").read_text() + "".join(
+            public_parts = [
                 (output / p).read_text()
                 for p in ["game.log", *(f"player{i}.log" for i in range(6))]
-            )
+            ]
+            if (output / "replay.json").exists():
+                public_parts.append((output / "replay.json").read_text())
+            public = "".join(public_parts)
             for secret in (
                 "private-guidance-fixture",
                 "private-invalid-response",
@@ -360,7 +390,9 @@ for flow in (
                 assert secret not in public
             if flow == "invalid":
                 assert any(
-                    d["action_status"] == "fallback" and len(d["attempts"]) == 2
+                    d["action_status"] == "rejected"
+                    and d["seat"] == "0"
+                    and len(d["attempts"]) == 2
                     for d in decisions
                 )
             if flow in {
@@ -372,7 +404,9 @@ for flow in (
                 "temperature-mismatch",
             }:
                 assert any(
-                    d["action_status"] == "fallback" and len(d["attempts"]) == 1
+                    d["action_status"] == "rejected"
+                    and d["seat"] == "0"
+                    and len(d["attempts"]) == 1
                     for d in decisions
                 )
             print(

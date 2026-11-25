@@ -153,7 +153,7 @@ when isMainModule:
       if payload.hasKey("done") and payload["done"].getBool(): break
       case payload["type"].getStr()
       of "welcome": echo "lantern player: seated at slot ", payload["slot"].getInt()
-      of "turn", "state", "evidence_received": discard
+      of "turn", "evidence_received": discard
       of "decision":
         if acknowledged or kind != "prompt":
           raise newException(ValueError, "decision does not belong to an active prompt player")

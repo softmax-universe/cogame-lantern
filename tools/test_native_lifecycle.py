@@ -86,7 +86,7 @@ for case in ("started-sigterm", "partial-sigterm", "partial-sigint", "player-sig
         for seat in range(6):
             player_env = {**env, "COWORLD_PLAYER_WS_URL": f"ws://127.0.0.1:{port}/player?slot={seat}&token=t{seat}",
                           "COWORLD_LLM_ENDPOINT": f"http://127.0.0.1:{provider.server_port}",
-                          "PLAYER_SCRIPTED": "" if seat == 0 else "1"}
+                          "PLAYER_SCRIPTED": "" if seat == 0 else "warden"}
             player_log = (output / f"player-{seat}.log").open("w")
             logs.append(player_log)
             processes.append(subprocess.Popen([str(PLAYER)], cwd=ROOT, env=player_env,
@@ -110,9 +110,8 @@ for case in ("started-sigterm", "partial-sigterm", "partial-sigint", "player-sig
         events = [json.loads(line) for line in (output / "trajectory.jsonl").read_text().splitlines()]
         episode = events[-1]
         assert episode["status"] == "truncated" and episode["participant_outcomes"] is None
-        scored = case in {"player-sigterm", "disconnected"}
-        assert (output / "results.json").exists() == scored
-        assert (output / "replay.json").exists() == scored
+        assert not (output / "results.json").exists()
+        assert not (output / "replay.json").exists()
         attempts = [attempt for event in events if event["event_type"] == "decision" for attempt in event["attempts"]]
         native = [attempt for attempt in attempts if attempt["origin"] == "model"]
         assert len(native) == 1
