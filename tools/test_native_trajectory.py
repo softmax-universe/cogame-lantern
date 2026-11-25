@@ -258,7 +258,9 @@ for flow in (
                 assert not (output / "results.json").exists()
                 assert not (output / "replay.json").exists()
                 failure_doc = json.loads((output / "player_failure.json").read_text())
-                assert failure_doc["slot"] == 0
+                assert set(failure_doc.keys()) == {"failed_policy_index", "message"}
+                assert failure_doc["failed_policy_index"] == 0
+                assert failure_doc["message"].startswith("policy decision failed (")
             else:
                 assert (
                     episode["status"] == "completed"

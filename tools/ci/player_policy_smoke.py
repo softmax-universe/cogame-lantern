@@ -217,7 +217,9 @@ def main(game_bin: str, player_bin: str) -> None:
             assert not (out / "results.json").exists(), "results.json must not be written on policy failure"
             assert not (out / "replay.json").exists(), "replay.json must not be written on policy failure"
             failure = json.loads((out / "player_failure.json").read_text())
-            assert failure["slot"] == 1 and failure["cause"] == "no_credentials", failure
+            assert set(failure.keys()) == {"failed_policy_index", "message"}, failure
+            assert failure["failed_policy_index"] == 1, failure
+            assert "no_credentials" in failure["message"], failure
             print(f"player policy no-endpoint failure OK: {failure}")
         finally:
             for process in fail_processes:

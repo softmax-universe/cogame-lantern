@@ -507,13 +507,14 @@ proc runEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     if policyFailure.isSome:
       let pf = policyFailure.get()
       writeArtifact(getEnv("COGAME_PLAYER_FAILURE_URI"),
-        $ %*{"slot": pf.slot, "cause": $pf.cause,
-             "reason": "policy decision failed (" & $pf.cause & ")"},
+        $ %*{"failed_policy_index": pf.slot,
+             "message": "policy decision failed (" & $pf.cause & ")"},
         "application/json", "COGAME_PLAYER_FAILURE_METHOD", cleanupDeadline)
     if not interruptionRequested() and reason in {erComplete, erDeadline}:
       if missing.len > 0:
         writeArtifact(getEnv("COGAME_PLAYER_FAILURE_URI"),
-          $ %*{"slot": missing[0], "reason": "player never connected", "slots": missing},
+          $ %*{"failed_policy_index": missing[0],
+               "message": "player never connected"},
           "application/json", "COGAME_PLAYER_FAILURE_METHOD", cleanupDeadline)
       writeArtifact(runtimeConfig.replayUri, replayData, "application/json",
                     "COGAME_SAVE_REPLAY_METHOD", cleanupDeadline)
